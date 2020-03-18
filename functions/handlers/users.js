@@ -6,7 +6,6 @@ const config = require('../config');
 const firebase = require('firebase');
 firebase.initializeApp(config);
 
-
 exports.signup = (req, res) => {
     const newUser = {
         email: req.body.email, 
@@ -28,7 +27,16 @@ exports.signup = (req, res) => {
             completedTutorial: false,
         })
         .then(() => {
-            return res.status(201).json({ message: `${ req.body.email } is now signed up`})
+            db.doc(`/users/all-users/user-data/${ user.uid }`).set({ 
+                email: newUser.email,
+                userScore: 0, 
+                videosReviewed: 0, 
+                accepted: 0, 
+                outliers: 0, 
+            })
+            .then(() => {
+                return res.status(201).json({ message: `${ req.body.email } is now signed up`})
+            })
         })
     })
     .catch(err => {
@@ -175,12 +183,6 @@ exports.grantAssistant = (req, res) => {
                         return res.status(406).json({ message: 'Admins cannot set admins to assistants.' }); 
                     }
                 } 
-                /*
-                if ((user.customClaims && user.customClaims.admin && user.customClaims.admin === true) && 
-                   (decodedToken.owner && decodedToken.owner === true)) {
-                    return res.status(406).json({ message: 'Admins cannot set owners to be assistants.' }); 
-                }
-                */
                 removeUserMetadata(user.uid)
                 .then(() => {
                     admin.auth().setCustomUserClaims(user.uid, {
@@ -525,7 +527,6 @@ const removeUserMetadata = (uid) => {
             reject(err);
         })
     })
-    
 } 
 
 
