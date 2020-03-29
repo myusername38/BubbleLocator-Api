@@ -8,7 +8,8 @@ exports.addVideo = (req, res) => {
     if (!req.headers.token) {
         return  res.status(400).json({ message: 'Must have a token' }); 
     }
-    const { valid, errors } = validateVideo(req.body.uid);
+
+    const { valid, errors } = validateVideo(req.body);
 
     if (!valid) {
         return res.status(400).json(errors);
@@ -20,11 +21,11 @@ exports.addVideo = (req, res) => {
     }
     if (url.substring(url.length - 4, url.length) !== 'dl=0') {
         return res.status(403).json({ message: 'Video url must end with dl=0' })
-    }
+    } 
 
     let id = url.substring(42, url.length - 5);
 
-    url = url.substring(0, url.length - 5) + 'raw=1'
+    url = url.substring(0, url.length - 5) + '?raw=1'
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
@@ -34,16 +35,17 @@ exports.addVideo = (req, res) => {
                 title: id,
                 added: Date.now(),
                 user: decodedToken.email,
-                status: 'incomplete',
+                ratings: 0,
                 fps: req.body.fps,
                 url 
             })
             .then(() => {
-                db.doc(`/videos/{ id }`).set({ 
+                db.doc(`/videos/${ id }`).set({ 
                     title: id,
                     added: Date.now(),
                     user: decodedToken.email,
                     location: 'incomplete-videos',
+                    fps: req.body.fps,
                     url,
                 }).then(()=> {  
                     res.status(200).json({ message: 'Video Added' }); 
@@ -55,6 +57,7 @@ exports.addVideo = (req, res) => {
         }
     })
     .catch((err) => {
+        console.log(err);
         return res.status(401).json({ err: err }); 
     });
 }
@@ -285,16 +288,7 @@ exports.submitVideoRating = (req, res) => {
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
         if (decodedToken.completedTutorial && decodedToken.completedTutorial === true) {
-            let ratingData = '';
-            try {
-                ratingData = JSON.stringify(req.body.ratingData);
-            } catch (err) {
-                if (err instanceof SyntaxError) {
-                    return res.status(400).json({ message: 'ratingData must be in a json format' });
-                } else {
-                    return res.status(500).json({ message: 'Unknown error' });
-                }
-            }
+            
             
         }
         

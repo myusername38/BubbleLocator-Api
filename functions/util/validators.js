@@ -95,7 +95,7 @@ exports.validateUserToken = (decodedToken) => {
 
 exports.validateVideo = (data) => {
     let errors = {};
-  
+    console.log(data.url);
     if (isEmpty(data.url)){
         errors.url = 'Must be a valid email address'
     } else if (data.url.substring(0, 26) !== 'https://www.dropbox.com/s/') {
