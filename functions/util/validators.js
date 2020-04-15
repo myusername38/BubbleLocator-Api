@@ -157,3 +157,39 @@ exports.validateTutorialVideo = (data) => {
         valid: Object.keys(errors).length === 0 ? true : false
     }
 } 
+
+exports.validateDeleteRating = (data) => {
+    let errors = {};
+    
+    if (!data.uid) {
+        errors.uid = 'Must have uid'
+    } else if (isEmpty(data.uid)) {
+        errors.uid = 'Uid must not be empty'
+    } else if (data.location) {
+        if (!(data.location === 'incomplete' || data.location === 'complete' )) {
+            errors.location = 'Location must be incomplete or complete'
+        }
+    } else if (!data.title) {
+        errors.title = 'Must have a title';
+    }
+    return {
+        errors,
+        valid: Object.keys(errors).length === 0 ? true : false
+    }
+}
+
+exports.validateVideoTitle = (data) => {
+    let errors = {};
+    
+    if (!data.title) {
+        errors.title = 'Must have a title';
+    } else if (isEmpty(data.title)) {
+        errors.title = 'Title must not be emtpy';
+    } else if (data.title.substring(data.title.length - 4, data.title.length) !== '.mp4') {
+        errors.title = 'Title must end in mp4';
+    }
+    return {
+        errors,
+        valid: Object.keys(errors).length === 0 ? true : false
+    }
+}
