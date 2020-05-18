@@ -95,7 +95,6 @@ exports.validateUserToken = (decodedToken) => {
 
 exports.validateVideo = (data) => {
     let errors = {};
-    console.log(data.url);
     if (isEmpty(data.url)){
         errors.url = 'Must be a valid email address'
     } else if (data.url.substring(0, 26) !== 'https://www.dropbox.com/s/') {
@@ -111,18 +110,6 @@ exports.validateVideo = (data) => {
     }
 }
 
-exports.validateRatingData
-
-/*
-title: id,
-added: Date.now(),
-user: decodedToken.email,
-status: 'tutorial',
-average: req.body.average, 
-url
-
-*/
-
 exports.validateGetExpandedVideoData = (data) => {
     errors = {};
 
@@ -135,22 +122,37 @@ exports.validateGetExpandedVideoData = (data) => {
     }
 }
 
+exports.validateTutorialRating = (data) => {
+    let errors = {};
+    if (!data.video) {
+        errors.video = 'Must have a video'
+    } else if (isEmpty(data.video)){
+        errors.video = 'Must have a video'
+    } else if (!data.average) {
+        errors.average = 'Must have an average'
+    } 
+    return {
+        errors,
+        valid: Object.keys(errors).length === 0 ? true : false
+    }
+}
+
 exports.validateTutorialVideo = (data) => {
     let errors = {};
    
     const videoValid = this.validateVideo(data)
     if (!videoValid.valid) {
         return videoValid;
-    } else if (!data.rangeFloor) {
-        errors.rangeFloor = 'Must have a floor for the range'
-    } else if (data.rangeFloor < 0) {
-        errors.rangeFloor = 'Floor must not be negative'
-    } else if (!data.rangeCeiling) {
-        errors.rangeCeiling = 'Must have a range ceiling'
-    } else if (data.rangeCeiling < 0 ) {    
-        errors.rangeCeiling = 'Ceiling must not be negative'
-    } else if (data.rangeFloor > data.rangeCeiling) {
-        errors.rangeCeiling = 'Ceiling must be higher than the floor'
+    } else if (!data.floor) {
+        errors.floor = 'Must have a floor for the range'
+    } else if (data.floor < 0) {
+        errors.floor = 'Floor must not be negative'
+    } else if (!data.ceiling) {
+        errors.ceiling = 'Must have a range ceiling'
+    } else if (data.ceiling < 0 ) {    
+        errors.ceiling = 'Ceiling must not be negative'
+    } else if (data.floor > data.ceiling) {
+        errors.ceiling = 'Ceiling must be higher than the floor'
     } 
     return {
         errors,

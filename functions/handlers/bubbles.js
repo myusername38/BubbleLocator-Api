@@ -1,12 +1,13 @@
 const { admin, db } = require('../util/admin');
 
-const { validateUserToken, validateVideo, validateGetExpandedVideoData, validateTutorialVideo, validateDeleteRating, validateVideoTitle } = require('../util/validators')
+const { validateVideo, validateGetExpandedVideoData, validateTutorialVideo, validateDeleteRating, validateVideoTitle } = require('../util/validators')
+const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, checkCompletedTutorial, checkBannedUser } = require('../util/permissions');
 
-const videosAtOnce = 15;
+const videosAtOnce = 1;
 
 exports.addVideo = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
 
     const { valid, errors } = validateVideo(req.body);
@@ -29,13 +30,13 @@ exports.addVideo = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true) ||
-            (decodedToken.assistant && decodedToekn.assistant === true)) {
+        if (checkAssistantPermission(decodedToken)) {
             db.doc(`/incomplete-videos/${ id }`).set({ 
                 title: id,
                 added: Date.now(),
                 user: decodedToken.email,
-                ratings: 0,
+                raters: [],
+                ratings: {},
                 fps: req.body.fps,
                 url 
             })
@@ -64,7 +65,7 @@ exports.addVideo = (req, res) => {
 
 exports.addTutorialVideo = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
     
     const { valid, errors } = validateTutorialVideo(req.body);
@@ -92,7 +93,7 @@ exports.addTutorialVideo = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true)) {
+        if (checkAdminPermission(decodedToken)) {
             db.doc(`/tutorial-videos/${ id }`).set({ 
                 title: id,
                 added: Date.now(),
@@ -128,12 +129,12 @@ exports.addTutorialVideo = (req, res) => {
 
 exports.getTutorialVideos = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true)) {
+        if (checkAdminPermission(decodedToken)) {
             db.collection('/tutorial-videos')
             .get()
             .then(data => {
@@ -156,7 +157,7 @@ exports.getTutorialVideos = (req, res) => {
 /*Think I might redo this */
 exports.getExpandedVideoData = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
 
     const { valid, errors } = validateGetExpandedVideoData(req.body.uid);
@@ -175,8 +176,7 @@ exports.getExpandedVideoData = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true) ||
-            (decodedToken.assistant && decodedToken.assistant === true)) {
+        if (checkAssistantPermission(decodedToken)) {
             if (location) {
                 db.doc(`/${ locaiton }/${ req.body.title }`).get()
                 .then((doc) => {
@@ -204,13 +204,13 @@ exports.getExpandedVideoData = (req, res) => {
 
 exports.getReviewVideo = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if (decodedToken.completedTutorial === true) {
-            getVideoUrl(null, decodedToken.email, 0).then(video => {
+        if (checkCompletedTutorial(decodedToken)) {
+            getVideoUrl(null, decodedToken.uid, 0).then(video => {
                 if (video && video.url) {
                     return res.status(200).json({
                         title: video.title,
@@ -237,26 +237,33 @@ exports.submitVideoRating = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if (decodedToken.completedTutorial && decodedToken.completedTutorial === true) {
-            const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
-            docQuery.get()
-            .then(doc => {
-                let docData = doc.data();
-                if (!docData.raters.includes(decodedToken.uid)) {
-                    docData.raters[docData.raters.length] = decodedToken.uid;
+        admin.auth().getUser(decodedToken.uid)
+        .then(userData => {
+            if (checkBannedUser(userData.customClaims)) {
+                return res.status(200).json({ message: 'Video rating added successfully' });
+            } else {
+                if (checkCompletedTutorial(decodedToken)) {
+                    const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
+                    docQuery.get()
+                    .then(doc => {
+                        let docData = doc.data();
+                        if (!docData.raters.includes(decodedToken.uid)) {
+                            docData.raters[docData.raters.length] = decodedToken.uid;
+                        }
+                        docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
+                        Promise.all([docQuery.set(docData), recordVideoReview(decodedToken.uid, req.body.title), addToDate()])
+                        .then(()=> {
+                            return res.status(200).json({ message: 'Video rating added successfully' });  
+                        })
+                    })
+                    .catch(err => {
+                        return res.status(401).json({ err: err });
+                    })
+                } else {
+                    return res.status(401).json({ message: 'Not authorized to add videos' }); 
                 }
-                docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
-                Promise.all([docQuery.set(docData), recordVideoReview(decodedToken.uid, req.body.title)])
-                .then(()=> {
-                    return res.status(200).json({ message: 'Video rating added successfully'});  
-                })
-            })
-            .catch(err => {
-                return res.status(401).json({ err: err });
-            })
-        } else {
-            return res.status(401).json({ message: 'Not authorized to add videos' }); 
-        }
+            }
+        })
     })
     .catch((err) => {
         return res.status(401).json({ err: err }); 
@@ -265,10 +272,10 @@ exports.submitVideoRating = (req, res) => {
 
 exports.deleteVideoRating = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
 
-    const { valid, errors } = validateDeleteRating(req.body);
+    const { valid, errors } = validateDeleteRating(req.query);
 
     if (!valid) {
         return res.status(400).json(errors);
@@ -276,25 +283,42 @@ exports.deleteVideoRating = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true) ||
-            (decodedToken.assistant && decodedToken.assistant === true)) {
-            const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
-            
+        if (checkAssistantPermission(decodedToken)) {
+            const query = db.doc(`/${ req.query.location }-videos/${ req.query.title }`);
+            query.get()
+            .then(doc => {
+                const docData = doc.data();
+                const ratings = {};
+                docData.raters = docData.raters.filter(rater => rater !== req.query.uid);
+                docData.raters.forEach(rater => {
+                    ratings[rater] = docData.ratings[rater];
+                })
+                docData.ratings = ratings;
+                Promise.all([
+                    query.set(docData),
+                    deleteVideoFromUsers(req.query.title)
+                ])
+                .then(() => {
+                    res.status(200).json({ message: 'Rating deleted' });
+                })
+            })
             .catch(err => {
-                return res.status(401).json({ err: err });
+                console.log(err);
+                return res.status(500).json({ err: err });
             })
         } else {
             return res.status(401).json({ message: 'Not authorized to add videos' }); 
         }
     })
     .catch((err) => {
+        console.log(err);
         return res.status(401).json({ err: err }); 
     });
 }
 
 exports.getVideoRatings = (req, res) => {
     if (!req.headers.token) {
-        return  res.status(400).json({ message: 'Must have a token' }); 
+        return res.status(400).json({ message: 'Must have a token' }); 
     }
     
     const { valid, errors } = validateVideoTitle(req.body);
@@ -307,8 +331,7 @@ exports.getVideoRatings = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if ((decodedToken.owner && decodedToken.owner === true) || (decodedToken.admin && decodedToken.admin === true) ||
-            (decodedToken.assistant && decodedToken.assistant === true)) {
+        if (checkAssistantPermission(decodedToken)) {
             let incomplete = null;
             let complete = null;
             Promise.all([
@@ -355,10 +378,157 @@ exports.getVideoRatings = (req, res) => {
     });
 }
 
-exports.setVideo = (req, res) => {
-    db.doc('/incomplete-videos/VIDEO-02%2003_05_09_12_11_19.mp4').get().then(data => {
-        checkAgreement(data.data());
+exports.getAllCompleteVideos = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkOwnerPermission(decodedToken) || decodedToken.email === 'dle4@email.unc.edu') {
+            db.collection('complete-videos')
+            .get()
+            .then(data => {
+                let videos = [];
+                data.forEach(doc => {
+                    videos.push(doc.data());
+                });
+                return res.status(200).json(videos);    
+            });
+        } else {
+            return res.status(401).json({ message: 'Not authorized to get all completed videos' }); 
+        }
     })
+    .catch((err) => {
+        return res.status(401).json({ err: err }); 
+    });
+}
+
+exports.resetVideo = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' });
+    }
+
+    const { valid, errors } = validateVideoTitle(req.body);
+
+    if (!valid) {
+        return res.status(400).json(errors);
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (!checkAssistantPermission(decodedToken)) {
+            return res.status(401).json({ message: 'Not authorized to get all completed videos' }); 
+        }
+        let video = null;
+        db.doc(`/videos/${ req.body.title }`).get().then(doc => {
+            if (!doc.exists) {
+                res.status(404).json({ message: 'Video does not exist' });
+            } 
+            video = doc.data();
+            if (video.location === 'tutorial-videos') {
+                res.status(403).json({ message: 'Cannot reset tutorial videos' });
+            }
+            db.doc(`/${ video.location }/${ video.title }`).get().then(doc => {
+                if (!doc.exists) {
+                    res.status(500).json({ message: 'Database got out of line. Please contact database owner and report this video' });
+                }
+                videoData = doc.data();
+                const promises = [];
+                promises.push(db.doc(`/videos/${ video.title }`).update({ location: 'incomplete-videos' }));
+                if (video.location === 'complete-videos') {
+                    promises.push(db.doc(`/complete-videos/${ video.title }`).delete());
+                }
+                promises.push(deleteVideoFromUsers(video.title));
+                video.raters = [];
+                video.ratings = {};
+                video.location = 'incomplete-videos';
+                promises.push(db.doc(`/incomplete-videos/${ video.title }`).set(video));
+                Promise.all(promises).then(() => {
+                    return res.status(200).json({ message: 'Video reset' });  
+                })
+            })
+        })
+    })
+    .catch((err) => {
+        return res.status(401).json({ err: err }); 
+    });
+}
+
+exports.deleteVideo = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+    
+    const { valid, errors } = validateVideoTitle(req.query);
+
+    if (!valid) {
+        return res.status(400).json(errors);
+    }
+
+    let title = req.query.title;
+    title = title.replace(' ', '%20');
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkAdminPermission(decodedToken)) {
+            const promises = [];
+            promises.push(deleteVideoFromUsers(title));
+            promises.push(db.doc(`/incomplete-videos/${ title }`).delete());
+            promises.push(db.doc(`/complete-videos/${ title }`).delete());
+            promises.push(db.doc(`/tutorial-videos/${ title }`).delete());
+            promises.push(db.doc(`/videos/${ title }`).delete());
+            Promise.all(promises)
+            .then(() => {
+                res.status(200).json({ message: 'Video deleted successfully' })
+            })
+            .catch((err) => {
+                return res.status(500).json({ err: err });
+            })
+        } else {
+            return res.status(401).json({ message: 'Not authorized to delete videos' }); 
+        }
+    })
+    .catch((err) => {
+        return res.status(401).json({ err: err }); 
+    });
+}
+
+exports.getVideo = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+    
+    const { valid, errors } = validateVideoTitle(req.query);
+
+    if (!valid) {
+        return res.status(400).json(errors);
+    }
+
+    let title = req.query.title;
+    title = title.replace(' ', '%20');
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkAssistantPermission(decodedToken)) {
+            db.doc(`/videos/${ title }`).get().then(doc => {
+                if (doc.exists) {
+                    const docData = doc.data();
+                    db.doc(`${ docData.location }/${ docData.title }`).get().then(doc => {
+                        return res.status(200).json({ video: doc.data() }); 
+                    });
+                } else {
+                    return res.status(404).json({ err: 'Video does not exist' });
+                }
+            })
+            .catch((err) => {
+                return res.status(500).json({ err: err });
+            });
+        } else {
+            return res.status(401).json({ message: 'Not authorized to search videos' }); 
+        }
+    })
+    .catch((err) => {
+        return res.status(401).json({ err: err }); 
+    });
 }
 
 const setVideoLocation = (user, title, location, video) => {
@@ -445,12 +615,59 @@ const recordVideoReview = (uid, video) => {
             if (!doc.videosRated.includes(video)) {
                 doc.videosRated.push(video);
             }
+            doc.videosReviewed += 1;
+            doc.score += 1;
             db.doc(`/users/${ uid }`).set(doc)
             .then(() => {
                 resolve();
-            })
+            });
         })
         .catch(err => {
+            reject(err);
+        })
+    })
+}
+
+const deleteVideoFromUsers = (title) => {
+    return new Promise((resolve, reject) => { // go in there and see if I can find it 
+        db.collection('users').where('videosRated', 'array-contains', title).get()
+        .then(data => {
+            const promises = [];
+            data.forEach(user => {
+                let userData = user.data();
+                userData.videosRated = userData.videosRated.filter(video => video !== title);
+                promises.push(user.ref.set(userData));
+            });
+            Promise.all(promises)
+            .then(() => {
+                resolve();
+            });
+        })
+        .catch((err) => {
+            reject(err);
+        })
+    })
+}
+
+const addToDate = () => {
+    const d = new Date(Date.now());
+    let day = d.toLocaleDateString().toString();
+    day = day.replace(/\//g, '.');
+    return new Promise((resolve, reject) => { // go in there and see if I can find it 
+        db.doc(`/ratingsPerDay/${ day }`).get()
+        .then(doc => {
+            if (!doc.exists) {
+                db.doc(`/ratingsPerDay/${ day }`).set({ date: Date.now(), day, ratings: 1 }).then(() => {
+                    resolve();
+                });
+            } else {
+                const data = doc.data();
+                doc.ref.update({ ratings: data.ratings + 1 }).then(() => {
+                    resolve();
+                });
+            }
+        })
+        .catch((err) => {
             reject(err);
         })
     })
@@ -464,8 +681,5 @@ const getVideo = (title) => {
         db.doc(`/incomplete-videos/${ title }`).get().then(doc => {
             console.log(doc.data());
         })
-        
-        
-
     })
 }

@@ -12,7 +12,7 @@ exports.checkAgreement = (checkVideo) => {
         checkVideo.raters.forEach(rater => {
             const raterAverage = getRating(checkVideo.ratings[rater].rating)
             if (raterAverage < 0) {
-                speicalCases.push(raterAverage);
+                specialCases.push(raterAverage);
             } else {
                 averages.push(raterAverage);
             }
@@ -48,19 +48,19 @@ exports.checkAgreement = (checkVideo) => {
             let numNoBubbles = 0;
             specialCases.forEach(rating => {
                 if (rating === -1) {
-                    numBadQuality++;
-                } else if (rating === -2) {
                     numWashOut++;
-                } else {
+                } else if (rating === -2) {
                     numNoBubbles++;
+                } else {
+                    numBadQuality++;
                 }
             })
+
             let acceptedRating = 0;
-            if (numNoBubbles >= 0) {
-                acceptedRating = -2;
-            }
-            else if (numWashOut >= 3) {
+            if (numWashOut >= 3) {
                 acceptedRating = -1;
+            } else if (numNoBubbles >= 3) {
+                acceptedRating = -2;
             } else if (numBadQuality >= 3) {
                 acceptedRating = -3
             }
@@ -68,26 +68,26 @@ exports.checkAgreement = (checkVideo) => {
             if (acceptedRating !== 0) {
                 checkVideo.raters.forEach(rater => {
                     if (ratingMap[rater] === acceptedRating) {
-                        rejected.push(rater);
-                    } else {
                         accepted.push(rater);
+                    } else {
+                        rejected.push(rater);
                     }
                 })
             }
         }
-        
+
         if (accepted.length < 3) {
            resolve();
-        }
+        } 
+    
         const promises = [];
         const acceptedDoc = checkVideo;
         acceptedDoc.raters = accepted;
-        const acceptedRatings = [];
+        acceptedRatings = {};
         accepted.forEach(rater => {
-            if (checkVideo.ratings[rater]) {
-                acceptedRatings.push(checkVideo.ratings[rater]);
-            }
+            acceptedRatings[rater] = checkVideo.ratings[rater];
         })
+        acceptedDoc.ratings = acceptedRatings;
         accepted.forEach((user) => {
             promises.push(db.doc(`/users/${ user }`).update({ userScore: FieldValue.increment(10), accepted:  FieldValue.increment(1) }));
         })
@@ -96,6 +96,7 @@ exports.checkAgreement = (checkVideo) => {
                 db.doc(`/users/${ user }`).get().then(data => {
                     const doc = data;
                     doc.rejectedRatings.push({ rating: checkVideo.ratings[rater].rating, video: checkVideo.title });
+                    doc.ratingsRejected = doc.ratingsRejected + 1;
                     doc.outliers += 1;
                     db.doc(`/users/${ user }`).set(doc)
                     .then(() => {
@@ -107,16 +108,15 @@ exports.checkAgreement = (checkVideo) => {
                 }) 
             }));
         });
+        promises.push(db.doc(`/videos/${ checkVideo.title }`).update({ location: 'complete-videos' }));
         promises.push(db.doc(`/incomplete-videos/${ checkVideo.title }`).delete());
         promises.push(db.doc(`/complete-videos/${ checkVideo.title }`).set(acceptedDoc));
-
         Promise.all(promises).then(() => {
             resolve();
         }) 
         .catch(err => {
             reject(err);
         })
-       resolve();
     })
 }
 
@@ -131,6 +131,7 @@ const getRating = (rating) => {
             return -3;
         }
     }
+    
     const frames = [];
     rating.forEach(bubble => {
         if (!frames.includes(bubble.frame)) {
@@ -140,5 +141,3 @@ const getRating = (rating) => {
     const average = rating.length / frames.length;
     return average;
 }
-
-
