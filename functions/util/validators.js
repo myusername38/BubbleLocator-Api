@@ -143,17 +143,15 @@ exports.validateTutorialVideo = (data) => {
     const videoValid = this.validateVideo(data)
     if (!videoValid.valid) {
         return videoValid;
-    } else if (!data.floor) {
-        errors.floor = 'Must have a floor for the range'
-    } else if (data.floor < 0) {
-        errors.floor = 'Floor must not be negative'
-    } else if (!data.ceiling) {
-        errors.ceiling = 'Must have a range ceiling'
-    } else if (data.ceiling < 0 ) {    
-        errors.ceiling = 'Ceiling must not be negative'
-    } else if (data.floor > data.ceiling) {
-        errors.ceiling = 'Ceiling must be higher than the floor'
-    } 
+    } else if (!data.stdev) {
+        errors.stdev = 'Must have a standard Deviation'
+    } else if (data.stdev < 0) {
+        errors.stdev = 'Standard Deviation must not be negative'
+    } else if (!data.average) {
+        errors.average = 'Must have a range ceiling'
+    } else if (data.average < 0 ) {    
+        errors.average = 'Ceiling must not be negative'
+    }
     return {
         errors,
         valid: Object.keys(errors).length === 0 ? true : false

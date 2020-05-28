@@ -25,40 +25,45 @@ exports.addVideo = (req, res) => {
     } 
 
     let id = url.substring(42, url.length - 5);
+    id = id.replace(/%20/g, '_');
 
     url = url.substring(0, url.length - 5) + '?raw=1'
 
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
-        if (checkAssistantPermission(decodedToken)) {
-            db.doc(`/incomplete-videos/${ id }`).set({ 
-                title: id,
-                added: Date.now(),
-                user: decodedToken.email,
-                raters: [],
-                ratings: {},
-                fps: req.body.fps,
-                url 
-            })
-            .then(() => {
-                db.doc(`/videos/${ id }`).set({ 
-                    title: id,
-                    added: Date.now(),
-                    user: decodedToken.email,
-                    location: 'incomplete-videos',
-                    fps: req.body.fps,
-                    url,
-                }).then(()=> {  
-                    res.status(200).json({ message: 'Video Added' }); 
-                })  
-            })
-        }
-        else {
+        if (!checkAssistantPermission(decodedToken)) {
             return res.status(401).json({ message: 'Not authorized to add videos' }); 
         }
+        db.doc(`/videos/${ id }`).get()
+        .then(doc => {
+            if (doc.exists) {
+                return res.status(406).json({ message: `The video already exists in ${ doc.data().location }` });
+            } else {
+                Promise.all([
+                    db.doc(`/incomplete-videos/${ id }`).set({ 
+                        title: id,
+                        added: Date.now(),
+                        user: decodedToken.email,
+                        raters: [],
+                        ratings: {},
+                        fps: req.body.fps,
+                        url 
+                    }),
+                    db.doc(`/videos/${ id }`).set({ 
+                        title: id,
+                        added: Date.now(),
+                        user: decodedToken.email,
+                        location: 'incomplete-videos',
+                        fps: req.body.fps,
+                        url,
+                    }) 
+                ]).then(()=> {  
+                    res.status(200).json({ message: 'Video Added' }); 
+                })
+            }
+        })      
     })
     .catch((err) => {
-        console.log(err);
         return res.status(401).json({ err: err }); 
     });
 }
@@ -77,6 +82,7 @@ exports.addTutorialVideo = (req, res) => {
     let url = req.body.url;
    
     let id = url.substring(42, url.length - 5);
+    id = id.replace(/%20/g, '_');
 
     url = url.substring(0, url.length - 5) + 'raw=1'
 
@@ -99,8 +105,8 @@ exports.addTutorialVideo = (req, res) => {
                 added: Date.now(),
                 user: decodedToken.email,
                 status: 'tutorial',
-                ceiling: req.body.ceiling,
-                floor: req.body.floor,
+                average: req.body.average,
+                stdev: req.body.stdev,
                 fps: req.body.fps,
                 noBubbles,
                 washOut,
@@ -229,6 +235,35 @@ exports.getReviewVideo = (req, res) => {
         return res.status(401).json({ err: err }); 
     });
 }
+
+exports.getTutorialVideo = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        db.doc(`/users/${ decodedToken.uid }`).get()
+        .then(doc => {
+            getTutorialVideoUrl(null, doc.data(), 0).then(video => {
+                if (video && video.url) {
+                    return res.status(200).json({
+                        title: video.title,
+                        fps: video.fps,
+                        url: video.url
+                    });
+                } else {
+                    return res.status(404).json({ message: 'No more videos to review'});  
+                }
+            })
+        })
+    })
+    .catch((err) => {
+        console.log(err);
+        return res.status(401).json({ err: err }); 
+    });
+}
+
 /* Need to add thing */
 exports.submitVideoRating = (req, res) => {
     if (!req.headers.token) {
@@ -241,28 +276,26 @@ exports.submitVideoRating = (req, res) => {
         .then(userData => {
             if (checkBannedUser(userData.customClaims)) {
                 return res.status(200).json({ message: 'Video rating added successfully' });
-            } else {
-                if (checkCompletedTutorial(decodedToken)) {
-                    const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
-                    docQuery.get()
-                    .then(doc => {
-                        let docData = doc.data();
-                        if (!docData.raters.includes(decodedToken.uid)) {
-                            docData.raters[docData.raters.length] = decodedToken.uid;
-                        }
-                        docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
-                        Promise.all([docQuery.set(docData), recordVideoReview(decodedToken.uid, req.body.title), addToDate()])
-                        .then(()=> {
-                            return res.status(200).json({ message: 'Video rating added successfully' });  
-                        })
-                    })
-                    .catch(err => {
-                        return res.status(401).json({ err: err });
-                    })
-                } else {
-                    return res.status(401).json({ message: 'Not authorized to add videos' }); 
-                }
+            } 
+            if (!checkCompletedTutorial(decodedToken)) {
+                return res.status(401).json({ message: 'Not authorized to add videos' }); 
             }
+            const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
+            docQuery.get()
+            .then(doc => {
+                let docData = doc.data();
+                if (!docData.raters.includes(decodedToken.uid)) {
+                    docData.raters[docData.raters.length] = decodedToken.uid;
+                }
+                docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
+                Promise.all([docQuery.set(docData), recordVideoReview(decodedToken.uid, req.body.title), addToDate()])
+                .then(()=> {
+                    return res.status(200).json({ message: 'Video rating added successfully' });  
+                })
+            })
+            .catch(err => {
+                return res.status(401).json({ err: err });
+            }) 
         })
     })
     .catch((err) => {
@@ -436,8 +469,10 @@ exports.resetVideo = (req, res) => {
                 videoData = doc.data();
                 const promises = [];
                 promises.push(db.doc(`/videos/${ video.title }`).update({ location: 'incomplete-videos' }));
-                if (video.location === 'complete-videos') {
+                if (video.location !== 'incomplete-videos') {
                     promises.push(db.doc(`/complete-videos/${ video.title }`).delete());
+                    promises.push(db.doc(`/unusable-videos/${ video.title }`).delete());
+                    promises.push(db.doc(`/flagged-videos/${ video.title }`).delete());
                 }
                 promises.push(deleteVideoFromUsers(video.title));
                 video.raters = [];
@@ -476,6 +511,8 @@ exports.deleteVideo = (req, res) => {
             promises.push(db.doc(`/incomplete-videos/${ title }`).delete());
             promises.push(db.doc(`/complete-videos/${ title }`).delete());
             promises.push(db.doc(`/tutorial-videos/${ title }`).delete());
+            promises.push(db.doc(`/unusable-videos/${ title }`).delete());
+            promises.push(db.doc(`/flagged-videos/${ title }`).delete());
             promises.push(db.doc(`/videos/${ title }`).delete());
             Promise.all(promises)
             .then(() => {
@@ -682,4 +719,39 @@ const getVideo = (title) => {
             console.log(doc.data());
         })
     })
+}
+
+
+const getTutorialVideoUrl = (previousDoc, userData, levels) => {
+    if (levels > 1000) {
+        return ({ message: 'Infinite loop' }); //in an infinite loop
+    }
+    let request = db.collection('/tutorial-videos').orderBy('added', 'asc').limit(20);
+
+    if (previousDoc) {
+        request = request.startAfter(previousDoc); // paginating the data
+    }
+
+    const tutorialVideosViewed = userData.tutorialRatings.map(r => r.video);
+
+    return new Promise((resolve, reject) => {
+        request.get()
+        .then(data => {
+            let videos = [];
+            data.forEach((doc) => {
+                lastDoc = doc; // getting the last doc to pagniate the data
+                videos[videos.length] = doc.data();
+            })
+            const shuffledIndex = getShuffledIndexes(videos.length);
+            shuffledIndex.forEach(i => {
+                if (!tutorialVideosViewed.includes(videos[i].title)) {
+                    return resolve(videos[i]); // making sure the rater has not seen this video before
+                }
+            })
+            return resolve(videos[shuffledIndex[0]]); //sending a random video when ready
+        })
+        .catch(err => {
+            reject(err);
+        })
+    })            
 }

@@ -6,6 +6,7 @@ const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, ch
 const config = require('../config');
 const firebase = require('firebase');
 firebase.initializeApp(config);
+const tutorialAcceptableStdev = 2;
 
 exports.signup = (req, res) => {
     const newUser = {
@@ -32,8 +33,7 @@ exports.signup = (req, res) => {
             db.doc(`/users/${ data.user.uid }`).set({
                 userScore: 0, 
                 videosReviewed: 0, 
-                accepted: 0, 
-                outliers: 0,
+                accepted: 0,
                 videosRated: [],
                 rejectedRatings: [],
                 ratingsRejected: 0,
@@ -489,38 +489,70 @@ exports.addTutorialRating = (req, res) => {
     admin.auth().verifyIdToken(req.headers.token, true)
     .then(decodedToken => {
         console.log(decodedToken);
-        if (decodedToken.email_verified) {
-            db.doc(`/tutorial-videos/${ req.body.video }`).get().then(doc => {
-                if (!doc.exists) {
-                    res.status(404).json({ message: 'Video does not exist' });
-                } else {
-                    videoData = doc.data();
-                    if (req.body.average >= videoData.floor && req.body.average <= videoData.ceiling) {
-                        addTutorialRatingPromise(decodedToken.uid, req.body.average, req.body.video, true).then(result => {
-                            if (result.completedTutorial) {
-                                res.status(200).json({ message: 'Tutorial completed' });
-                            } else {
-                                res.status(200).json({ message: 'Average was within the range' })
-                            }
-                        })
-                        .catch(err => {
-                            console.log(err);
-                            res.status(500).json({ err })
-                        })
-                    } else {
-                        res.status(406).json({ message: 'Average not in the acceptable range' });
-                    }
-                }
-            })
-            .catch(err => {
-                console.log(err);
-                res.status(500).json({ err, message: 'Internal server error' })
-            })
-        } else {
+        if (!decodedToken.email_verified) {
             return res.status(401).json({ err: 'Must verify email first' });
         }
+        db.doc(`/tutorial-videos/${ req.body.video }`).get().then(doc => {
+            if (!doc.exists) {
+                res.status(404).json({ message: 'Video does not exist' });
+            } else {
+                videoData = doc.data();
+                let floor = videoData.average - (videoData.stdev * tutorialAcceptableStdev);
+                if (floor < 0) {
+                    floor = 0;
+                }
+                const ceiling = videoData.average + (videoData.stdev * tutorialAcceptableStdev);
+                if (req.body.average >= floor && req.body.average <= ceiling) {
+                    addTutorialRatingPromise(decodedToken.uid, req.body.average, req.body.video, true).then(result => {
+                        if (result.completedTutorial) {
+                            res.status(200).json({ message: 'Tutorial completed' });
+                        } else {
+                            res.status(200).json({ message: 'Average was within the range' })
+                        }
+                    })
+                    .catch(err => {
+                        console.log(err);
+                        res.status(500).json({ err })
+                    })
+                } else {
+                    res.status(406).json({ message: 'Average not in the acceptable range' });
+                }
+            }
+        })
+        .catch(err => {
+            console.log(err);
+            res.status(500).json({ err, message: 'Internal server error' })
+        })
     })
     .catch((err) => {
+        return res.status(401).json({ err }); 
+    });
+}
+
+exports.getUserScoreGraphData = (req, res) => {
+    if (!req.headers.token) {
+        return  res.status(400).json({ message: 'Must have a token' }); 
+    }
+    /* add code to test the values to make sure this accurate */ 
+    admin.auth().verifyIdToken(req.headers.token, true)
+    .then(decodedToken => {
+        if (!(decodedToken.email_verified && decodedToken.email_verified === true)) {
+            return res.status(401).json({ message: 'Must verify email first' });
+        }
+        const promises = [];
+        promises.push(db.doc(`/users/${ decodedToken.uid }`).get());
+        promises.push(db.collection('users').orderBy('userScore', 'desc').limit(1).get())
+        Promise.all(promises).then(data => {
+            const user = data[0].data();
+            let topUser = null;
+            data[1].forEach(doc => {
+                topUser = doc.data();
+            })
+            return res.status(200).json({ top: topUser.userScore, user: user.userScore });
+        })
+    })
+    .catch((err) => {
+        console.log(err);
         return res.status(401).json({ err }); 
     });
 }
@@ -642,10 +674,12 @@ const changeUserRole = (uid, role) => {
                 doc = {
                     userScore: 0, 
                     videosReviewed: 0, 
-                    accepted: 0, 
-                    outliers: 0,
+                    accepted: 0,
                     videosRated: [],
+                    rejectedRatings: [],
+                    ratingsRejected: 0,
                     role,
+                    uid
                 }
             } else {
                 doc.role = role;
