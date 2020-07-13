@@ -3,7 +3,7 @@ const { admin, db } = require('../util/admin');
 const { validateVideo, validateGetExpandedVideoData, validateTutorialVideo, validateDeleteRating, validateVideoTitle } = require('../util/validators')
 const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, checkCompletedTutorial, checkBannedUser } = require('../util/permissions');
 
-const videosAtOnce = 1;
+const videosAtOnce = 15;
 
 exports.addVideo = (req, res) => {
     if (!req.headers.token) {
@@ -81,10 +81,9 @@ exports.addTutorialVideo = (req, res) => {
 
     let url = req.body.url;
    
-    let id = url.substring(42, url.length - 5);
-    id = id.replace(/%20/g, '_');
+    let id = url.substring(42, url.length - 5); 
 
-    url = url.substring(0, url.length - 5) + 'raw=1'
+    url = url.substring(0, url.length - 5) + '?raw=1'
 
     let noBubbles = false; 
     let washOut = false;
@@ -110,6 +109,7 @@ exports.addTutorialVideo = (req, res) => {
                 fps: req.body.fps,
                 noBubbles,
                 washOut,
+                badQuality,
                 url
             })
             .then(() => {
@@ -250,7 +250,10 @@ exports.getTutorialVideo = (req, res) => {
                     return res.status(200).json({
                         title: video.title,
                         fps: video.fps,
-                        url: video.url
+                        url: video.url,
+                        noBubbles: video.noBubbles,
+                        washOut: video.washOut,
+                        badQuality: video.badQuality,
                     });
                 } else {
                     return res.status(404).json({ message: 'No more videos to review'});  
@@ -283,6 +286,9 @@ exports.submitVideoRating = (req, res) => {
             const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
             docQuery.get()
             .then(doc => {
+                if (!doc.exists) {
+                    return res.status(404).json({ message: 'Video has been reviewed or does not exist' });
+                }
                 let docData = doc.data();
                 if (!docData.raters.includes(decodedToken.uid)) {
                     docData.raters[docData.raters.length] = decodedToken.uid;
@@ -653,7 +659,7 @@ const recordVideoReview = (uid, video) => {
                 doc.videosRated.push(video);
             }
             doc.videosReviewed += 1;
-            doc.score += 1;
+            doc.userScore += 1;
             db.doc(`/users/${ uid }`).set(doc)
             .then(() => {
                 resolve();
@@ -732,7 +738,7 @@ const getTutorialVideoUrl = (previousDoc, userData, levels) => {
         request = request.startAfter(previousDoc); // paginating the data
     }
 
-    const tutorialVideosViewed = userData.tutorialRatings.map(r => r.video);
+    const tutorialVideosViewed = userData.tutorialRatings.map(r => r.title);
 
     return new Promise((resolve, reject) => {
         request.get()

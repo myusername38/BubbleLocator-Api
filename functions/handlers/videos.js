@@ -2,8 +2,6 @@ const { db } = require('../util/admin');
 const { std, mean } = require('mathjs');
 const FieldValue = require('firebase-admin').firestore.FieldValue;
 
-
-
 exports.checkAgreement = (checkVideo) => {
     return new Promise((resolve, reject) => {
         const maxRatings = 5;

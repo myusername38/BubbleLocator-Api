@@ -27,7 +27,7 @@ exports.validateSignupData = (data) => {
 
 exports.validateLoginData = (data) => {
     let errors = {};
-
+    console.log(data);
     if (isEmpty(data.email)) {
         errors.email = 'Email must not be empty'
     } else if (!isEmail(data.email)){
@@ -124,13 +124,14 @@ exports.validateGetExpandedVideoData = (data) => {
 
 exports.validateTutorialRating = (data) => {
     let errors = {};
-    if (!data.video) {
-        errors.video = 'Must have a video'
-    } else if (isEmpty(data.video)){
-        errors.video = 'Must have a video'
+    const videoValid = this.validateVideoTitle(data);
+    if (!videoValid.valid) {
+        return videoValid;
     } else if (!data.average) {
         errors.average = 'Must have an average'
-    } 
+    } else if (data.average < 0 ) {    
+        errors.average = 'Average must not be negative'
+    }
     return {
         errors,
         valid: Object.keys(errors).length === 0 ? true : false
@@ -147,7 +148,7 @@ exports.validateTutorialVideo = (data) => {
         errors.stdev = 'Must have a standard Deviation'
     } else if (data.stdev < 0) {
         errors.stdev = 'Standard Deviation must not be negative'
-    } else if (!data.average) {
+    } else if (!data.average >= 0) {
         errors.average = 'Must have a range ceiling'
     } else if (data.average < 0 ) {    
         errors.average = 'Ceiling must not be negative'

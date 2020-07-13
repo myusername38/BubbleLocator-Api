@@ -7,6 +7,7 @@ const config = require('../config');
 const firebase = require('firebase');
 firebase.initializeApp(config);
 const tutorialAcceptableStdev = 2;
+const tutorialVideosToComplete = 4;
 
 exports.signup = (req, res) => {
     const newUser = {
@@ -34,9 +35,10 @@ exports.signup = (req, res) => {
                 userScore: 0, 
                 videosReviewed: 0, 
                 accepted: 0,
+                outliers: 0,
                 videosRated: [],
+                tutorialRatings: [],
                 rejectedRatings: [],
-                ratingsRejected: 0,
                 role: 'rater',
                 uid: data.user.uid
             })
@@ -94,6 +96,7 @@ exports.deleteUser = (req, res) => {
         return res.status(400).json(errors);
     }
 
+
     admin.auth().verifyIdToken(req.headers.token, true)
     .then((decodedToken) => {
         if (checkAdminPermission(decodedToken)) {
@@ -115,7 +118,19 @@ exports.deleteUser = (req, res) => {
                 })
             })
             .catch((err) => {
-                return res.status(500).json({ err: err }); 
+                // making sure all the user data is deleted
+                if (err.code === 'auth/user-not-found') {
+                    Promise.all([
+                        removeUserMetadata(req.query.uid),
+                        removeAllUserRatings(req.query.uid)
+                    ])
+                    .then(() => {
+                        return res.status(404).json({ message: 'User does not exist' }); 
+                    })
+                } else {
+                    console.log(err);
+                    return res.status(500).json({ err: err }); 
+                }
             });
         }
         else {
@@ -146,6 +161,9 @@ exports.getUidFromEmail = (req, res) => {
                 return res.json({ uid: user.uid })
             })
             .catch((err) => {
+                if (err.code && err.code === 'auth/user-not-found') {
+                    return res.status(404).json({ message: 'User not found' })
+                }
                 return res.status(500).json({ err: err }); 
             });
         }
@@ -488,11 +506,10 @@ exports.addTutorialRating = (req, res) => {
 
     admin.auth().verifyIdToken(req.headers.token, true)
     .then(decodedToken => {
-        console.log(decodedToken);
         if (!decodedToken.email_verified) {
             return res.status(401).json({ err: 'Must verify email first' });
         }
-        db.doc(`/tutorial-videos/${ req.body.video }`).get().then(doc => {
+        db.doc(`/tutorial-videos/${ req.body.title }`).get().then(doc => {
             if (!doc.exists) {
                 res.status(404).json({ message: 'Video does not exist' });
             } else {
@@ -503,11 +520,11 @@ exports.addTutorialRating = (req, res) => {
                 }
                 const ceiling = videoData.average + (videoData.stdev * tutorialAcceptableStdev);
                 if (req.body.average >= floor && req.body.average <= ceiling) {
-                    addTutorialRatingPromise(decodedToken.uid, req.body.average, req.body.video, true).then(result => {
-                        if (result.completedTutorial) {
-                            res.status(200).json({ message: 'Tutorial completed' });
+                    addTutorialRatingPromise(decodedToken.uid, req.body.average, req.body.title, true).then(result => {
+                        if (result.passed) {
+                            res.status(200).json({ message: 'Tutorial completed', accepted: true, count: result.count, toPass: tutorialVideosToComplete });
                         } else {
-                            res.status(200).json({ message: 'Average was within the range' })
+                            res.status(200).json({ message: `Bubble rating was accepted!`,  accepted: true, count: result.count, toPass: tutorialVideosToComplete } )
                         }
                     })
                     .catch(err => {
@@ -515,7 +532,16 @@ exports.addTutorialRating = (req, res) => {
                         res.status(500).json({ err })
                     })
                 } else {
-                    res.status(406).json({ message: 'Average not in the acceptable range' });
+                    db.doc(`/users/${ decodedToken.uid }`).get().then(doc => { //getting the accepted number
+                        const userData = doc.data();
+                        let count = 0;
+                        userData.tutorialRatings.forEach(rating => {
+                            if (rating.valid) {
+                                count += 1;
+                            }
+                        })
+                        res.status(200).json({ message: 'Bubble rating was not accepted', accepted: false, count, toPass: tutorialVideosToComplete });
+                    });  
                 }
             }
         })
@@ -548,7 +574,8 @@ exports.getUserScoreGraphData = (req, res) => {
             data[1].forEach(doc => {
                 topUser = doc.data();
             })
-            return res.status(200).json({ top: topUser.userScore, user: user.userScore });
+            const accepted = user.accepted;
+            return res.status(200).json({ top: topUser.userScore, user: user.userScore, accepted });
         })
     })
     .catch((err) => {
@@ -564,7 +591,7 @@ const addTutorialRatingPromise = (uid, rating, video, valid) => {
             if (!userData.tutorialRatings) {
                 userData.tutorialRatings = [];
             }
-            if (userData.tutorialRatings.filter(r => r.video === video).length > 0 && userData.tutorialRatings.length < 10) {
+            if (userData.tutorialRatings.filter(r => r.title === video).length > 0 && userData.tutorialRatings.length < 10) {
                 console.log('here')
                 reject({ err: 'Tutorial video already reviewed' });
             }
@@ -576,7 +603,7 @@ const addTutorialRatingPromise = (uid, rating, video, valid) => {
                     count += 1;
                 }
             })
-            if (count >= 3) {
+            if (count >= tutorialVideosToComplete) {
                 promises.push(
                     new Promise((resolve, reject) => {
                         admin.auth().getUser(uid)
@@ -595,9 +622,12 @@ const addTutorialRatingPromise = (uid, rating, video, valid) => {
             }
             promises.push(doc.ref.set(userData));
             Promise.all(promises).then(() => {
-                const completedTutorial = count >= 3;
-                console.log('2')
-                resolve(completedTutorial);
+                if (count >= tutorialVideosToComplete) {
+                    console.log(count);
+                    resolve({ passed: true, count })
+                } else {
+                    resolve({ passed: false, count });
+                }
             });
         })
         .catch(err => {
