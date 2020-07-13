@@ -27,7 +27,7 @@ exports.validateSignupData = (data) => {
 
 exports.validateLoginData = (data) => {
     let errors = {};
-
+    console.log(data);
     if (isEmpty(data.email)) {
         errors.email = 'Email must not be empty'
     } else if (!isEmail(data.email)){
@@ -95,7 +95,6 @@ exports.validateUserToken = (decodedToken) => {
 
 exports.validateVideo = (data) => {
     let errors = {};
-    console.log(data.url);
     if (isEmpty(data.url)){
         errors.url = 'Must be a valid email address'
     } else if (data.url.substring(0, 26) !== 'https://www.dropbox.com/s/') {
@@ -111,23 +110,27 @@ exports.validateVideo = (data) => {
     }
 }
 
-exports.validateRatingData
-
-/*
-title: id,
-added: Date.now(),
-user: decodedToken.email,
-status: 'tutorial',
-average: req.body.average, 
-url
-
-*/
-
 exports.validateGetExpandedVideoData = (data) => {
     errors = {};
 
     if (isEmpty(data.title)) {
         errors.title = 'Must have a title'
+    }
+    return {
+        errors,
+        valid: Object.keys(errors).length === 0 ? true : false
+    }
+}
+
+exports.validateTutorialRating = (data) => {
+    let errors = {};
+    const videoValid = this.validateVideoTitle(data);
+    if (!videoValid.valid) {
+        return videoValid;
+    } else if (!data.average) {
+        errors.average = 'Must have an average'
+    } else if (data.average < 0 ) {    
+        errors.average = 'Average must not be negative'
     }
     return {
         errors,
@@ -141,17 +144,15 @@ exports.validateTutorialVideo = (data) => {
     const videoValid = this.validateVideo(data)
     if (!videoValid.valid) {
         return videoValid;
-    } else if (!data.rangeFloor) {
-        errors.rangeFloor = 'Must have a floor for the range'
-    } else if (data.rangeFloor < 0) {
-        errors.rangeFloor = 'Floor must not be negative'
-    } else if (!data.rangeCeiling) {
-        errors.rangeCeiling = 'Must have a range ceiling'
-    } else if (data.rangeCeiling < 0 ) {    
-        errors.rangeCeiling = 'Ceiling must not be negative'
-    } else if (data.rangeFloor > data.rangeCeiling) {
-        errors.rangeCeiling = 'Ceiling must be higher than the floor'
-    } 
+    } else if (!data.stdev) {
+        errors.stdev = 'Must have a standard Deviation'
+    } else if (data.stdev < 0) {
+        errors.stdev = 'Standard Deviation must not be negative'
+    } else if (!data.average >= 0) {
+        errors.average = 'Must have a range ceiling'
+    } else if (data.average < 0 ) {    
+        errors.average = 'Ceiling must not be negative'
+    }
     return {
         errors,
         valid: Object.keys(errors).length === 0 ? true : false

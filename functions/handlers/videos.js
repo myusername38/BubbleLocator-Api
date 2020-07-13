@@ -4,15 +4,18 @@ const FieldValue = require('firebase-admin').firestore.FieldValue;
 
 exports.checkAgreement = (checkVideo) => {
     return new Promise((resolve, reject) => {
+        const maxRatings = 5;
         const numOfDeviations = 3;
         const averages = [];
         const ratingMap = {};
         const specialCases = [];
+        let flagged = false;
+        let unusable = false;
 
         checkVideo.raters.forEach(rater => {
             const raterAverage = getRating(checkVideo.ratings[rater].rating)
             if (raterAverage < 0) {
-                speicalCases.push(raterAverage);
+                specialCases.push(raterAverage);
             } else {
                 averages.push(raterAverage);
             }
@@ -48,80 +51,108 @@ exports.checkAgreement = (checkVideo) => {
             let numNoBubbles = 0;
             specialCases.forEach(rating => {
                 if (rating === -1) {
-                    numBadQuality++;
-                } else if (rating === -2) {
                     numWashOut++;
-                } else {
+                } else if (rating === -2) {
                     numNoBubbles++;
+                } else {
+                    numBadQuality++;
                 }
             })
+
             let acceptedRating = 0;
-            if (numNoBubbles >= 0) {
-                acceptedRating = -2;
-            }
-            else if (numWashOut >= 3) {
+            if (numWashOut >= 3) {
                 acceptedRating = -1;
+            } else if (numNoBubbles >= 3) {
+                acceptedRating = -2;
             } else if (numBadQuality >= 3) {
-                acceptedRating = -3
+                acceptedRating = -3;
             }
 
-            if (acceptedRating !== 0) {
+            if (acceptedRating === 0 && (numBadQuality + numWashOut) >= 3) {
+                unusable = true;
                 checkVideo.raters.forEach(rater => {
-                    if (ratingMap[rater] === acceptedRating) {
-                        rejected.push(rater);
-                    } else {
+                    if (ratingMap[rater] === -3 || ratingMap[rater] === -1) {
                         accepted.push(rater);
+                    } else {
+                        rejected.push(rater);
                     }
                 })
-            }
-        }
-        
-        if (accepted.length < 3) {
-           resolve();
-        }
-        const promises = [];
-        const acceptedDoc = checkVideo;
-        acceptedDoc.raters = accepted;
-        const acceptedRatings = [];
-        accepted.forEach(rater => {
-            if (checkVideo.ratings[rater]) {
-                acceptedRatings.push(checkVideo.ratings[rater]);
-            }
-        })
-        accepted.forEach((user) => {
-            promises.push(db.doc(`/users/${ user }`).update({ userScore: FieldValue.increment(10), accepted:  FieldValue.increment(1) }));
-        })
-        rejected.forEach((user) => {
-            promises.push(new Promise((resolve, reject) => {
-                db.doc(`/users/${ user }`).get().then(data => {
-                    const doc = data;
-                    doc.rejectedRatings.push({ rating: checkVideo.ratings[rater].rating, video: checkVideo.title });
-                    doc.outliers += 1;
-                    db.doc(`/users/${ user }`).set(doc)
-                    .then(() => {
-                        resolve();
-                    })
+            } else if (acceptedRating !== 0) {
+                checkVideo.raters.forEach(rater => {
+                    if (ratingMap[rater] === acceptedRating) {
+                        accepted.push(rater);
+                    } else {
+                        rejected.push(rater);
+                    }
                 })
-                .catch(err => {
-                    reject(err);
-                }) 
-            }));
-        });
-        promises.push(db.doc(`/incomplete-videos/${ checkVideo.title }`).delete());
-        promises.push(db.doc(`/complete-videos/${ checkVideo.title }`).set(acceptedDoc));
+            } 
+        }
+        // if not agree by now send off to be flagged 
+        // need logic for that 
+        if (accepted.length < 3 && checkVideo.raters.length >= maxRatings) {
+            flagged = true;
+        }
 
+        if (accepted.length < 3 && !flagged) {
+           return resolve();
+        }
+
+        const promises = [];
+
+        let location = 'complete';
+        if (flagged) {
+            location = 'flagged';
+        } else if (unusable) {
+            location = 'unusable';
+        }
+       
+        if (!flagged) {
+            const acceptedDoc = checkVideo;
+            acceptedDoc.raters = accepted;
+            acceptedRatings = {};
+            accepted.forEach(rater => {
+                acceptedRatings[rater] = checkVideo.ratings[rater];
+            })
+            acceptedDoc.ratings = acceptedRatings;
+            accepted.forEach((user) => {
+                promises.push(db.doc(`/users/${ user }`).update({ userScore: FieldValue.increment(10), accepted:  FieldValue.increment(1) }));
+            })
+            rejected.forEach((user) => {
+                promises.push(new Promise((resolve, reject) => {
+                    db.doc(`/users/${ user }`).get().then(data => {
+                        const doc = data;
+                        doc.rejectedRatings.push({ rating: checkVideo.ratings[rater].rating, video: checkVideo.title });
+                        doc.outliers += 1;
+                        db.doc(`/users/${ user }`).set(doc)
+                        .then(() => {
+                            resolve();
+                        })
+                    })
+                    .catch(err => {
+                        reject(err);
+                    }) 
+                }));
+            });
+            promises.push(db.doc(`/${ location }-videos/${ checkVideo.title }`).set(acceptedDoc));
+            promises.push(db.doc(`/flagged-videos/${ checkVideo.title }`).delete()); //don't want to delete and write at the same tiem 
+        } else {
+            promises.push(db.doc(`/${ location }-videos/${ checkVideo.title }`).set(checkVideo))
+        }
+        promises.push(db.doc(`/videos/${ checkVideo.title }`).update({ location: `${ location }-videos` }));
+        promises.push(db.doc(`/incomplete-videos/${ checkVideo.title }`).delete());
+
+       
         Promise.all(promises).then(() => {
             resolve();
         }) 
         .catch(err => {
             reject(err);
         })
-       resolve();
     })
 }
 
 const getRating = (rating) => {
-    if (rating.length === 1) {
+    if (rating.length === 1 && rating[0].frame === -1) {
         const bubble = rating[0];
         if (bubble.x === -1 && bubble.y === -1) {
             return -1;
@@ -131,14 +162,17 @@ const getRating = (rating) => {
             return -3;
         }
     }
+    
+    let emptyFrames = 0;
     const frames = [];
     rating.forEach(bubble => {
         if (!frames.includes(bubble.frame)) {
             frames.push(bubble.frame);
         }
+        if (bubble.x === -2 && bubble.y === -2) {
+            emptyFrames += 1;
+        }
     });
-    const average = rating.length / frames.length;
+    const average = (rating.length - emptyFrames) / frames.length;
     return average;
 }
-
-
