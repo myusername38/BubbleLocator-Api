@@ -20,42 +20,59 @@ exports.signup = (req, res) => {
     if (!valid) {
         return res.status(400).json(errors);
     }
-
-    firebase.auth().createUserWithEmailAndPassword(newUser.email, newUser.password)
-    .then((data) => {
-        admin.auth().setCustomUserClaims(data.user.uid, {
-            assistant: false,
-            admin: false,
-            owner: false,
-            completedTutorial: false,
-            banned: false,
-        })
-        .then(() => {
-            db.doc(`/users/${ data.user.uid }`).set({
-                userScore: 0, 
-                videosReviewed: 0, 
-                accepted: 0,
-                outliers: 0,
-                videosRated: [],
-                tutorialRatings: [],
-                rejectedRatings: [],
-                role: 'rater',
-                uid: data.user.uid
+    db.doc('/whitelist/allow-registration').get().then(doc => {
+        if (!doc.data().emails.includes(newUser.email)) {
+            return res.status(400).json({ email: 'Email is not whitelisted' });   
+        }
+        
+    //.then(() => {
+        firebase.auth().createUserWithEmailAndPassword(newUser.email, newUser.password)
+        .then((data) => {
+            admin.auth().setCustomUserClaims(data.user.uid, {
+                assistant: false,
+                admin: false,
+                owner: false,
+                completedTutorial: false,
+                banned: false,
             })
-            .then(() => { return })
+            .then(() => {
+                db.doc(`/users/${ data.user.uid }`).set({
+                    userScore: 0, 
+                    videosReviewed: 0, 
+                    accepted: 0,
+                    outliers: 0,
+                    videosRated: [],
+                    tutorialRatings: [],
+                    rejectedRatings: [],
+                    role: 'rater',
+                    uid: data.user.uid
+                })
+                .then(() => { return })
+            })
+            .then(() => {
+                return res.status(201).json({ message: `${ req.body.email } is now signed up`})
+            })
         })
-        .then(() => {
-            return res.status(201).json({ message: `${ req.body.email } is now signed up`})
-        })
+        .catch(err => {
+            console.error(err);
+            if(err.code === 'auth/email-already-in-use'){
+                console.log('here')
+                return res.status(400).json({ email: 'Email is already in use'});    
+            } else {
+            return res.status(500).json({ error: err.code });
+            } 
+        });
     })
     .catch(err => {
         console.error(err);
         if(err.code === 'auth/email-already-in-use'){
+            console.log('here')
             return res.status(400).json({ email: 'Email is already in use'});    
         } else {
         return res.status(500).json({ error: err.code });
         } 
     });
+    
 }
 
 exports.login = (req, res) => {
@@ -96,7 +113,6 @@ exports.deleteUser = (req, res) => {
         return res.status(400).json(errors);
     }
 
-
     admin.auth().verifyIdToken(req.headers.token, true)
     .then((decodedToken) => {
         if (checkAdminPermission(decodedToken)) {
@@ -109,8 +125,9 @@ exports.deleteUser = (req, res) => {
                 } 
                 Promise.all([
                     admin.auth().deleteUser(user.uid),
-                    removeUserMetadata(user.uid),
+                    removeUserMetadata(user.uid, true),
                     removeAllUserRatings(user.uid),
+                    admin.auth().revokeRefreshTokens(user.uid),
                     db.doc(`/users/${ user.uid }`).delete()
                 ])
                 .then(() => {
@@ -121,7 +138,7 @@ exports.deleteUser = (req, res) => {
                 // making sure all the user data is deleted
                 if (err.code === 'auth/user-not-found') {
                     Promise.all([
-                        removeUserMetadata(req.query.uid),
+                        removeUserMetadata(req.query.uid, true),
                         removeAllUserRatings(req.query.uid)
                     ])
                     .then(() => {
@@ -136,6 +153,45 @@ exports.deleteUser = (req, res) => {
         else {
             return res.status(401).json({ message: 'Not authorized to delete users' }); 
         }
+    })
+    .catch((err) => {
+        return res.status(401).json({ err }); 
+    });
+}
+
+exports.removeUserAccount = (req, res) => {
+    console.log('work');
+    if (!req.headers.token) {
+        return  res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+    admin.auth().verifyIdToken(req.headers.token, true)
+    .then(decodedToken => {
+        Promise.all([
+            admin.auth().deleteUser(decodedToken.uid),
+            removeUserMetadata(decodedToken.uid),
+            removeAllUserRatings(decodedToken.uid, false),
+            db.doc(`/users/${ decodedToken.uid }`).delete()
+        ])
+        .then(() => {
+            return res.status(200).json({ message: `${ decodedToken.uid } has been deleted` });
+        })
+        .catch((err) => {
+            // making sure all the user data is deleted
+            if (err.code === 'auth/user-not-found') {
+                Promise.all([
+                    removeUserMetadata(decodedToken.uid, false),
+                    removeAllUserRatings(decodedToken.uid),
+                    admin.auth().revokeRefreshTokens(decodedToken.uid),
+                ])
+                .then(() => {
+                    return res.status(404).json({ message: 'User does not exist' }); 
+                })
+            } else {
+                console.log(err);
+                return res.status(500).json({ err: err }); 
+            }
+        });
     })
     .catch((err) => {
         return res.status(401).json({ err }); 
@@ -381,7 +437,7 @@ exports.completedTutorial = (req, res) => {
     admin.auth().verifyIdToken(req.headers.token, true)
     .then((decodedToken) => {
         if (decodedToken.owner && decodedToken.owner === true) {
-            admin.auth().getUserByEmail(req.body.email)
+            admin.auth().getUser(req.body.uid)
             .then((user) => {
                 let claims = user.customClaims;
                 claims.completedTutorial = true;
@@ -560,23 +616,17 @@ exports.getUserScoreGraphData = (req, res) => {
         return  res.status(400).json({ message: 'Must have a token' }); 
     }
     /* add code to test the values to make sure this accurate */ 
-    admin.auth().verifyIdToken(req.headers.token, true)
-    .then(decodedToken => {
-        if (!(decodedToken.email_verified && decodedToken.email_verified === true)) {
-            return res.status(401).json({ message: 'Must verify email first' });
-        }
-        const promises = [];
-        promises.push(db.doc(`/users/${ decodedToken.uid }`).get());
-        promises.push(db.collection('users').orderBy('userScore', 'desc').limit(1).get())
-        Promise.all(promises).then(data => {
-            const user = data[0].data();
-            let topUser = null;
-            data[1].forEach(doc => {
-                topUser = doc.data();
-            })
-            const accepted = user.accepted;
-            return res.status(200).json({ top: topUser.userScore, user: user.userScore, accepted });
+    const promises = [];
+    promises.push(db.doc(`/users/${ decodedToken.uid }`).get());
+    promises.push(db.collection('users').orderBy('userScore', 'desc').limit(1).get())
+    Promise.all(promises).then(data => {
+        const user = data[0].data();
+        let topUser = null;
+        data[1].forEach(doc => {
+            topUser = doc.data();
         })
+        const accepted = user.accepted;
+        return res.status(200).json({ top: topUser.userScore, user: user.userScore, accepted });
     })
     .catch((err) => {
         console.log(err);
@@ -636,10 +686,10 @@ const addTutorialRatingPromise = (uid, rating, video, valid) => {
     })
 }
 
-const removeAllUserRatings = (uid) => {
+const removeAllUserRatings = (uid, all) => {
     return new Promise((resolve, reject) => {
         const videoDocs = [];
-        Promise.all([
+        const promises = [
             db.collection('incomplete-videos').where('raters', 'array-contains', uid).get()
             .then(docs => {
                 docs.forEach(doc => {
@@ -647,14 +697,36 @@ const removeAllUserRatings = (uid) => {
                 })
                 return;
             }),
-            db.collection('complete-videos').where('raters', 'array-contains', uid).get()
+            db.collection('flagged-videos').where('raters', 'array-contains', uid).get()
             .then(docs => {
                 docs.forEach(doc => {
                     videoDocs.push(doc)
                 })
                 return;
             }),
-        ]).then(() => {
+        ];
+        if (all) {
+            promises.push(
+                db.collection('unusable-videos').where('raters', 'array-contains', uid).get()
+                .then(docs => {
+                    docs.forEach(doc => {
+                        videoDocs.push(doc)
+                    })
+                    return;
+                })
+            );
+            promises.push(
+                db.collection('complete-videos').where('raters', 'array-contains', uid).get()
+                .then(docs => {
+                    docs.forEach(doc => {
+                        videoDocs.push(doc)
+                    })
+                    return;
+                }),
+            );
+        }
+        Promise.all(promises)
+        .then(() => {
             const promises = [];
             videoDocs.forEach(doc => {
                 const docData = doc.data();

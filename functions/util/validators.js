@@ -167,8 +167,8 @@ exports.validateDeleteRating = (data) => {
     } else if (isEmpty(data.uid)) {
         errors.uid = 'Uid must not be empty'
     } else if (data.location) {
-        if (!(data.location === 'incomplete' || data.location === 'complete' )) {
-            errors.location = 'Location must be incomplete or complete'
+        if (!(data.location === 'incomplete' || data.location === 'complete' || data.location === 'flagged' )) {
+            errors.location = 'Location must be incomplete, complete, or flagged'
         }
     } else if (!data.title) {
         errors.title = 'Must have a title';
