@@ -4,20 +4,19 @@ const { std } = require('mathjs')
 const { admin, db } = require('./util/admin');
 const cors = require('cors');
 
-const { signup, login, grantOwner, grantAdmin, grantAssistant, completedTutorial, getAssistants, getAdmins, getOwners, removePermissions, testToken, getUidFromEmail, deleteUser, banUser, addTutorialRating, getUserScoreGraphData } = require('./handlers/users');
+const { signup, login, grantOwner, grantAdmin, grantAssistant, completedTutorial, getAssistants, getAdmins, getOwners, removePermissions, testToken, getUidFromEmail, deleteUser, banUser, addTutorialRating, getUserScoreGraphData, removeUserAccount } = require('./handlers/users');
 const { addVideo, getVideoRatings, getReviewVideo, addTutorialVideo, getExpandedVideoData, getTutorialVideos, submitVideoRating, setVideo, getAllCompleteVideos, resetVideo, deleteVideo, deleteVideoRating, getVideo, getTutorialVideo } = require('./handlers/bubbles');
-const { checkAgreement } = require('./handlers/videos');
+const { checkAgreement, reviewFlaggedVideo } = require('./handlers/videos');
 
 const express = require('express');
 const app = express();
 
-let whitelist = ['http://localhost:4200', 'https://vastdime.com']
+let whitelist = ['https://decobubbles.com', 'https://www.decobubbles.com',];
 let corsOptions = {
     origin: (origin, callback) => {
         callback(null, true)
         /*
         if (whitelist.includes(origin)) {
-
             callback(null, true)
         } else {
             callback(new Error('Not allowed by CORS'))
@@ -36,11 +35,12 @@ app.post('/grant-assistant', grantAssistant);
 app.post('/add-video', addVideo);
 app.post('/add-tutorial-rating', addTutorialRating);
 app.get('/get-uid-from-email', getUidFromEmail);
-app.post('/completed-tutorial', completedTutorial);
+app.post('/skip-tutorial', completedTutorial);
 app.post('/reset-video', resetVideo);
 app.delete('/delete-video', deleteVideo);
 app.delete('/delete-video-rating', deleteVideoRating);
-app.delete('/delete-user', deleteUser)
+app.delete('/delete-user', deleteUser);
+app.delete('/remove-user-account', removeUserAccount);
 app.put('/ban-user', banUser);
 app.post('/get-video-ratings', getVideoRatings);
 app.get('/get-tutorial-video', getTutorialVideo);
@@ -56,6 +56,7 @@ app.post('/add-tutorial-video', addTutorialVideo);
 app.get('/get-tutorial-videos', getTutorialVideos);
 app.get('/get-expanded-video-data', getExpandedVideoData);
 app.post('/submit-video-rating', submitVideoRating);
+app.post('/review-flagged-video', reviewFlaggedVideo);
 
 const numOfDeviations = 3;
 
@@ -66,14 +67,12 @@ exports.countIncompleteVideos = functions.firestore.document('/incomplete-videos
         categoryRef.update({ length: FieldValue.increment(1) });
     } else if (change.before.exists && change.after.exists) {
         const doc = change.after.data();
-        if (doc.raters[0] && doc.raters.length >= 3) {
-            checkAgreement(doc).then(() => {
-                return;
-            })
-            .catch(err => {
-                console.log(err);
-            })
-        }
+        checkAgreement(doc).then(() => {
+            return;
+        })
+        .catch(err => {
+            console.log(err);
+        })
     } else if (!change.after.exists) {
         categoryRef.update({ length: FieldValue.increment(-1) });
     }

@@ -1,16 +1,62 @@
-const { db } = require('../util/admin');
+const { db, admin } = require('../util/admin');
 const { std, mean } = require('mathjs');
 const FieldValue = require('firebase-admin').firestore.FieldValue;
+const { checkAssistantPermission } = require('../util/permissions');
+const { validateVideoTitle } = require('../util/validators')
+
+const maxRatings = 5;
+const numOfDeviations = 3;
+const numberOfAgreements = 3;
+
+exports.reviewFlaggedVideo = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+    const { valid, errors } = validateVideoTitle(req.body);
+
+    if (!valid) {
+        return res.status(400).json(errors);
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkAssistantPermission(decodedToken)) {
+            db.doc(`/videos/${ req.body.title }`).get()
+            .then(doc => {
+                const data = doc.data();
+                db.doc(`/${ data.location }/${ data.title }`).get().then((videoDoc) => {
+                    const toCheck = videoDoc.data();
+                    this.checkAgreement(toCheck).then(() => {
+                        return res.status(200).json({ message: 'Successfully updated' });
+                    })
+                })
+            })
+            .catch(err => {
+                console.log(err);
+                return res.status(500).json({ err: err });
+            })
+        } else {
+            return res.status(401).json({ message: 'Not authorized to review flagged videos' }); 
+        }
+    })
+    .catch((err) => {
+        console.log(err);
+        return res.status(401).json({ err: err }); 
+    });
+}
 
 exports.checkAgreement = (checkVideo) => {
     return new Promise((resolve, reject) => {
-        const maxRatings = 5;
-        const numOfDeviations = 3;
         const averages = [];
         const ratingMap = {};
         const specialCases = [];
         let flagged = false;
         let unusable = false;
+        console.log(checkVideo)
+        if (checkVideo.raters.length < numberOfAgreements) {
+            return resolve(); // too few raters
+        }
 
         checkVideo.raters.forEach(rater => {
             const raterAverage = getRating(checkVideo.ratings[rater].rating)
@@ -24,7 +70,7 @@ exports.checkAgreement = (checkVideo) => {
 
         let rejected = [];
         let accepted = [];
-        if (averages.length >= 3) {
+        if (averages.length >= numberOfAgreements) {
             const standardDev = std(averages, 'uncorrected');
             const mean1 = mean(averages);
             const upperRange = mean1 + (numOfDeviations * standardDev);
@@ -43,7 +89,7 @@ exports.checkAgreement = (checkVideo) => {
         /*
         if there are less than 3 accepted and there are special cases check agreement
         */
-        if (accepted.length < 3 && specialCases.length >= 3) {
+        if (accepted.length < numberOfAgreements && specialCases.length >= numberOfAgreements) {
             accepted = [];
             rejected = [];
             let numBadQuality = 0;
@@ -60,15 +106,15 @@ exports.checkAgreement = (checkVideo) => {
             })
 
             let acceptedRating = 0;
-            if (numWashOut >= 3) {
+            if (numWashOut >= numberOfAgreements) {
                 acceptedRating = -1;
-            } else if (numNoBubbles >= 3) {
+            } else if (numNoBubbles >= numberOfAgreements) {
                 acceptedRating = -2;
-            } else if (numBadQuality >= 3) {
+            } else if (numBadQuality >= numberOfAgreements) {
                 acceptedRating = -3;
             }
 
-            if (acceptedRating === 0 && (numBadQuality + numWashOut) >= 3) {
+            if (acceptedRating === 0 && (numBadQuality + numWashOut) >= numberOfAgreements) {
                 unusable = true;
                 checkVideo.raters.forEach(rater => {
                     if (ratingMap[rater] === -3 || ratingMap[rater] === -1) {
@@ -89,39 +135,27 @@ exports.checkAgreement = (checkVideo) => {
         }
         // if not agree by now send off to be flagged 
         // need logic for that 
-        if (accepted.length < 3 && checkVideo.raters.length >= maxRatings) {
+        if (accepted.length < numberOfAgreements && checkVideo.raters.length >= maxRatings) {
             flagged = true;
-        }
-
-        if (accepted.length < 3 && !flagged) {
-           return resolve();
         }
 
         const promises = [];
 
-        let location = 'complete';
+        let location = 'incomplete';
         if (flagged) {
             location = 'flagged';
         } else if (unusable) {
             location = 'unusable';
+        } else if (accepted.length >= numberOfAgreements) {
+            location = 'complete';
         }
-       
-        if (!flagged) {
-            const acceptedDoc = checkVideo;
-            acceptedDoc.raters = accepted;
-            acceptedRatings = {};
-            accepted.forEach(rater => {
-                acceptedRatings[rater] = checkVideo.ratings[rater];
-            })
-            acceptedDoc.ratings = acceptedRatings;
-            accepted.forEach((user) => {
-                promises.push(db.doc(`/users/${ user }`).update({ userScore: FieldValue.increment(10), accepted:  FieldValue.increment(1) }));
-            })
-            rejected.forEach((user) => {
+        if (!flagged && location !== 'incomplete') {
+            rejected.forEach(user => {
+                const rejectedRating = { rating: checkVideo.ratings[user].rating, video: checkVideo.title };
                 promises.push(new Promise((resolve, reject) => {
                     db.doc(`/users/${ user }`).get().then(data => {
-                        const doc = data;
-                        doc.rejectedRatings.push({ rating: checkVideo.ratings[rater].rating, video: checkVideo.title });
+                        const doc = data.data();
+                        doc.rejectedRatings.push(rejectedRating);
                         doc.outliers += 1;
                         db.doc(`/users/${ user }`).set(doc)
                         .then(() => {
@@ -133,15 +167,18 @@ exports.checkAgreement = (checkVideo) => {
                     }) 
                 }));
             });
-            promises.push(db.doc(`/${ location }-videos/${ checkVideo.title }`).set(acceptedDoc));
-            promises.push(db.doc(`/flagged-videos/${ checkVideo.title }`).delete()); //don't want to delete and write at the same tiem 
-        } else {
-            promises.push(db.doc(`/${ location }-videos/${ checkVideo.title }`).set(checkVideo))
-        }
-        promises.push(db.doc(`/videos/${ checkVideo.title }`).update({ location: `${ location }-videos` }));
-        promises.push(db.doc(`/incomplete-videos/${ checkVideo.title }`).delete());
 
-       
+            checkVideo.raters = accepted;
+            acceptedRatings = {};
+            accepted.forEach(rater => {
+                acceptedRatings[rater] = checkVideo.ratings[rater];
+            })
+            checkVideo.ratings = acceptedRatings;
+            accepted.forEach((user) => {
+                promises.push(db.doc(`/users/${ user }`).update({ userScore: FieldValue.increment(10), accepted:  FieldValue.increment(1) }));
+            })
+        }
+        promises.push(changeLocation(location, checkVideo))
         Promise.all(promises).then(() => {
             resolve();
         }) 
@@ -149,6 +186,32 @@ exports.checkAgreement = (checkVideo) => {
             reject(err);
         })
     })
+}
+
+
+const changeLocation = (newLocation, videoDoc) => {
+    return new Promise((resolve, reject) => {
+        if (`${ newLocation }-videos` === videoDoc.location) {
+            return resolve(); // do nothing 
+        } else {
+            const location = videoDoc.location;
+            console.log('firstLocation: ', location)
+            videoDoc.location = `${ newLocation }-videos`;
+            console.log('change location');
+            const promises = [];
+            promises.push(db.doc(`/videos/${ videoDoc.title }`).update({ location: `${ newLocation }-videos` }));
+            promises.push(db.doc(`/${ newLocation }-videos/${ videoDoc.title }`).set(videoDoc));
+            Promise.all(promises).then(() => {
+                db.doc(`/${ location }/${ videoDoc.title }`).delete().then(() => {
+                    return resolve();
+                })
+            })
+            .catch(err => {
+                reject(err);
+            })
+        }
+        
+    });
 }
 
 const getRating = (rating) => {

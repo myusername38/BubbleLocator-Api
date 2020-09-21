@@ -1,4 +1,5 @@
 const { admin, db } = require('../util/admin');
+const FieldValue = admin.firestore.FieldValue;
 
 const { validateVideo, validateGetExpandedVideoData, validateTutorialVideo, validateDeleteRating, validateVideoTitle } = require('../util/validators')
 const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, checkCompletedTutorial, checkBannedUser } = require('../util/permissions');
@@ -294,7 +295,12 @@ exports.submitVideoRating = (req, res) => {
                     docData.raters[docData.raters.length] = decodedToken.uid;
                 }
                 docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
-                Promise.all([docQuery.set(docData), recordVideoReview(decodedToken.uid, req.body.title), addToDate()])
+                Promise.all([
+                    docQuery.set(docData),
+                    recordVideoReview(decodedToken.uid, req.body.title), 
+                    addToDate(),
+                    db.doc('metadata/all-time-ratings').update({ length: FieldValue.increment(1) })
+                ])
                 .then(()=> {
                     return res.status(200).json({ message: 'Video rating added successfully' });  
                 })
