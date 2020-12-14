@@ -8,6 +8,7 @@ const firebase = require('firebase');
 firebase.initializeApp(config);
 const tutorialAcceptableStdev = 2;
 const tutorialVideosToComplete = 4;
+const FieldValue = require('firebase-admin').firestore.FieldValue;
 
 exports.signup = (req, res) => {
     const newUser = {
@@ -20,22 +21,23 @@ exports.signup = (req, res) => {
     if (!valid) {
         return res.status(400).json(errors);
     }
+    /*
     db.doc('/whitelist/allow-registration').get().then(doc => {
         if (!doc.data().emails.includes(newUser.email)) {
             return res.status(400).json({ email: 'Email is not whitelisted' });   
         }
-        
-    //.then(() => {
+    .then(() => {
+    */
         firebase.auth().createUserWithEmailAndPassword(newUser.email, newUser.password)
         .then((data) => {
-            admin.auth().setCustomUserClaims(data.user.uid, {
-                assistant: false,
-                admin: false,
-                owner: false,
-                completedTutorial: false,
-                banned: false,
-            })
-            .then(() => {
+            Promise.all([
+                admin.auth().setCustomUserClaims(data.user.uid, {
+                    assistant: false,
+                    admin: false,
+                    owner: false,
+                    completedTutorial: false,
+                    banned: false,
+                }),
                 db.doc(`/users/${ data.user.uid }`).set({
                     userScore: 0, 
                     videosReviewed: 0, 
@@ -46,26 +48,17 @@ exports.signup = (req, res) => {
                     rejectedRatings: [],
                     role: 'rater',
                     uid: data.user.uid
-                })
-                .then(() => { return })
-            })
+                }),
+                db.doc(`/metadata/users`).update({ length: FieldValue.increment(1) }),
+            ])
             .then(() => {
                 return res.status(201).json({ message: `${ req.body.email } is now signed up`})
             })
-        })
-        .catch(err => {
-            console.error(err);
-            if(err.code === 'auth/email-already-in-use'){
-                console.log('here')
-                return res.status(400).json({ email: 'Email is already in use'});    
-            } else {
-            return res.status(500).json({ error: err.code });
-            } 
-        });
+        // })
     })
     .catch(err => {
         console.error(err);
-        if(err.code === 'auth/email-already-in-use'){
+        if (err.code === 'auth/email-already-in-use'){
             console.log('here')
             return res.status(400).json({ email: 'Email is already in use'});    
         } else {
@@ -96,7 +89,7 @@ exports.login = (req, res) => {
     })
     .catch(err => {
         console.error(err);
-        if(err.code === 'auth/wrong-password'){
+        if (err.code === 'auth/wrong-password'){
             return res.status(403).json({ general: 'Wrong credentials, please try again' });
         } else return res.status(500).json({ error: err.code });
     });
@@ -127,6 +120,7 @@ exports.deleteUser = (req, res) => {
                     admin.auth().deleteUser(user.uid),
                     removeUserMetadata(user.uid, true),
                     removeAllUserRatings(user.uid),
+                    db.doc(`/metadata/users`).update({ length: FieldValue.increment(-1) }),
                     admin.auth().revokeRefreshTokens(user.uid),
                     db.doc(`/users/${ user.uid }`).delete()
                 ])
@@ -160,7 +154,6 @@ exports.deleteUser = (req, res) => {
 }
 
 exports.removeUserAccount = (req, res) => {
-    console.log('work');
     if (!req.headers.token) {
         return  res.status(400).json({ message: 'Must have a token' }); 
     }
@@ -171,6 +164,7 @@ exports.removeUserAccount = (req, res) => {
             admin.auth().deleteUser(decodedToken.uid),
             removeUserMetadata(decodedToken.uid),
             removeAllUserRatings(decodedToken.uid, false),
+            db.doc(`/metadata/users`).update({ length: FieldValue.increment(-1) }),
             db.doc(`/users/${ decodedToken.uid }`).delete()
         ])
         .then(() => {
@@ -634,6 +628,66 @@ exports.getUserScoreGraphData = (req, res) => {
     });
 }
 
+exports.resetAllUserScores = (req, res) => {
+    if (!req.headers.token) {
+        return  res.status(400).json({ message: 'Must have a token' }); 
+    }
+    /* add code to test the values to make sure this accurate */ 
+    admin.auth().verifyIdToken(req.headers.token, true)
+    .then((decodedToken) => {
+        if (checkAdminPermission(decodedToken)) {
+            const promises = [];
+            db.collection('users').get()
+            .then(docs => {
+                docs.forEach(doc => {
+                    promises.push(doc.ref.update({ userScore: 0 }));
+                })
+            })
+            Promise.all(promises).then(() => {
+                return res.status(200).json({ message: 'Complete' });
+            })
+        } else {
+            return res.status(401).json({ message: 'Not authorized to reset user scores' }); 
+        }
+    })  
+    .catch((err) => {
+        console.log(err);
+        return res.status(401).json({ err }); 
+    });
+}
+
+exports.updateUserCount  = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkAdminPermission(decodedToken)) {
+            db.collection('users').get()
+            .then(data => {
+                let count = 0;
+                data.forEach(doc => {
+                    count++;
+                })
+                db.doc(`/metadata/users`).update({ length: count }).then(() => {
+                    return res.status(200).json({ message: 'Successfully updated' });
+                })
+            })
+            .catch(err => {
+                console.log(err);
+                return res.status(500).json({ err: err });
+            })
+        } else {
+            return res.status(401).json({ message: 'Not authorized to update users count' }); 
+        }
+    })
+    .catch((err) => {
+        console.log(err);
+        return res.status(401).json({ err: err }); 
+    });
+}
+
 const addTutorialRatingPromise = (uid, rating, video, valid) => {
     return new Promise((resolve, reject) => {
         db.doc(`/users/${ uid }`).get().then(doc => {
@@ -642,7 +696,6 @@ const addTutorialRatingPromise = (uid, rating, video, valid) => {
                 userData.tutorialRatings = [];
             }
             if (userData.tutorialRatings.filter(r => r.title === video).length > 0 && userData.tutorialRatings.length < 10) {
-                console.log('here')
                 reject({ err: 'Tutorial video already reviewed' });
             }
             const promises = [];

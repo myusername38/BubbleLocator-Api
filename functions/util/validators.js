@@ -27,7 +27,6 @@ exports.validateSignupData = (data) => {
 
 exports.validateLoginData = (data) => {
     let errors = {};
-    console.log(data);
     if (isEmpty(data.email)) {
         errors.email = 'Email must not be empty'
     } else if (!isEmail(data.email)){
@@ -79,11 +78,9 @@ exports.getRole = (data) => {
 
 exports.validateUserToken = (decodedToken) => {
     let errors = {};
-
     if (!(decodedToken.completedTutorial && decodedToken.completedTutorial === true)) {
         errors.email = 'Must verify email'
     }
-
     if (!(decodedToken.completedTutorial && decodedToken.completedTutorial === true)) {
         errors.tutorial = 'Must complete tutorial before getting served videos'
     }
@@ -99,11 +96,10 @@ exports.validateVideo = (data) => {
         errors.url = 'Must be a valid email address'
     } else if (data.url.substring(0, 26) !== 'https://www.dropbox.com/s/') {
         errors.url = 'Videos must be from dropbox'
-    } else if (data.url.substring(data.url.length - 4, data.url.length) !== 'dl=0') {
+    } else if (data.url.substring(data.url.length - 4, data.url.length) !== 'dl=0' && 
+               data.url.substring(data.url.length - 5, data.url.length) !== 'raw=1') {
         errors.url = 'Video url must end with dl=0' 
-    } else if (data.fps < 0) {
-        errors.fps = 'FPS cannot be negative'
-    }
+    } 
     return {
         errors,
         valid: Object.keys(errors).length === 0 ? true : false

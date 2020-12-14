@@ -1,12 +1,59 @@
 const { db, admin } = require('../util/admin');
 const { std, mean } = require('mathjs');
 const FieldValue = require('firebase-admin').firestore.FieldValue;
-const { checkAssistantPermission } = require('../util/permissions');
-const { validateVideoTitle } = require('../util/validators')
+const { checkAssistantPermission, checkAdminPermission, checkCompletedTutorial, checkBannedUser } = require('../util/permissions');
+const { validateVideoTitle } = require('../util/validators');
 
 const maxRatings = 5;
 const numOfDeviations = 3;
 const numberOfAgreements = 3;
+
+exports.submitVideoRating = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' });
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        admin.auth().getUser(decodedToken.uid)
+        .then(userData => {
+            if (checkBannedUser(userData.customClaims)) {
+                return res.status(200).json({ message: 'Video rating added successfully' });
+            } 
+            if (!checkCompletedTutorial(decodedToken)) {
+                return res.status(401).json({ message: 'Not authorized to add videos' }); 
+            }
+            const docQuery = db.doc(`/incomplete-videos/${ req.body.title }`)
+            docQuery.get()
+            .then(doc => {
+                if (!doc.exists) {
+                    return res.status(404).json({ message: 'Video has been reviewed or does not exist' });
+                }
+                let docData = doc.data();
+                if (!docData.raters.includes(decodedToken.uid)) {
+                    docData.raters[docData.raters.length] = decodedToken.uid;
+                }
+                docData.ratings[decodedToken.uid] = { added: Date.now(), rating: req.body.rating };
+                Promise.all([
+                    docQuery.set(docData),
+                    recordVideoReview(decodedToken.uid, req.body.title), 
+                    addToDate(),
+                    db.doc('metadata/all-time-ratings').update({ length: FieldValue.increment(1) })
+                ])
+                .then(()=> {
+                    this.checkAgreement(docData);
+                    return res.status(200).json({ message: 'Video rating added successfully' });  
+                })
+            })
+            .catch(err => {
+                return res.status(401).json({ err: err });
+            }) 
+        })
+    })
+    .catch((err) => {
+        return res.status(401).json({ err: err }); 
+    });
+}
 
 exports.reviewFlaggedVideo = (req, res) => {
     if (!req.headers.token) {
@@ -20,15 +67,24 @@ exports.reviewFlaggedVideo = (req, res) => {
     }
 
     admin.auth().verifyIdToken(req.headers.token) 
-    .then((decodedToken) => {
+    .then(decodedToken => {
         if (checkAssistantPermission(decodedToken)) {
             db.doc(`/videos/${ req.body.title }`).get()
             .then(doc => {
                 const data = doc.data();
                 db.doc(`/${ data.location }/${ data.title }`).get().then((videoDoc) => {
-                    const toCheck = videoDoc.data();
-                    this.checkAgreement(toCheck).then(() => {
-                        return res.status(200).json({ message: 'Successfully updated' });
+                    const promises = [];
+                    ['incomplete-videos', 'unusable-videos', 'flagged-videos', 'complete-videos'].forEach(location => {
+                        if (data.location !== location) {
+                            // cleaning up the database
+                            promises.push(db.doc(`/${ location }/${ data.title }`).delete());
+                        }
+                    })
+                    Promise.all(promises).then(() => {
+                        const toCheck = videoDoc.data();
+                        this.checkAgreement(toCheck).then(() => {
+                            return res.status(200).json({ message: 'Successfully updated' });
+                        })
                     })
                 })
             })
@@ -53,11 +109,9 @@ exports.checkAgreement = (checkVideo) => {
         const specialCases = [];
         let flagged = false;
         let unusable = false;
-        console.log(checkVideo)
         if (checkVideo.raters.length < numberOfAgreements) {
             return resolve(); // too few raters
         }
-
         checkVideo.raters.forEach(rater => {
             const raterAverage = getRating(checkVideo.ratings[rater].rating)
             if (raterAverage < 0) {
@@ -93,28 +147,21 @@ exports.checkAgreement = (checkVideo) => {
             accepted = [];
             rejected = [];
             let numBadQuality = 0;
-            let numWashOut = 0;
             let numNoBubbles = 0;
             specialCases.forEach(rating => {
-                if (rating === -1) {
-                    numWashOut++;
-                } else if (rating === -2) {
-                    numNoBubbles++;
-                } else {
-                    numBadQuality++;
-                }
+                numBadQuality++;
             })
 
             let acceptedRating = 0;
-            if (numWashOut >= numberOfAgreements) {
-                acceptedRating = -1;
-            } else if (numNoBubbles >= numberOfAgreements) {
+            if (numNoBubbles >= numberOfAgreements) {
+                unusable = true;
                 acceptedRating = -2;
             } else if (numBadQuality >= numberOfAgreements) {
+                unusable = true;
                 acceptedRating = -3;
             }
 
-            if (acceptedRating === 0 && (numBadQuality + numWashOut) >= numberOfAgreements) {
+            if (acceptedRating === 0 && numBadQuality >= numberOfAgreements) {
                 unusable = true;
                 checkVideo.raters.forEach(rater => {
                     if (ratingMap[rater] === -3 || ratingMap[rater] === -1) {
@@ -146,9 +193,10 @@ exports.checkAgreement = (checkVideo) => {
             location = 'flagged';
         } else if (unusable) {
             location = 'unusable';
-        } else if (accepted.length >= numberOfAgreements) {
+        } else if (accepted.length >= numberOfAgreements && !unusable) {
             location = 'complete';
         }
+        console.log(location);
         if (!flagged && location !== 'incomplete') {
             rejected.forEach(user => {
                 const rejectedRating = { rating: checkVideo.ratings[user].rating, video: checkVideo.title };
@@ -188,19 +236,59 @@ exports.checkAgreement = (checkVideo) => {
     })
 }
 
+exports.updateCount  = (req, res) => {
+    if (!req.headers.token) {
+        return res.status(400).json({ message: 'Must have a token' }); 
+    }
+
+
+    if (!req.body.location) {
+        return res.status(400).json({ message: 'Must have a location field' });
+    }
+
+    admin.auth().verifyIdToken(req.headers.token) 
+    .then((decodedToken) => {
+        if (checkAdminPermission(decodedToken)) {
+            db.collection(req.body.location).get()
+            .then(data => {
+                let count = 0;
+                data.forEach(doc => {
+                    count++;
+                })
+                db.doc(`/metadata/${ req.body.location }`).update({ length: count }).then(() => {
+                    return res.status(200).json({ message: 'Successfully updated' });
+                })
+            })
+            .catch(err => {
+                console.log(err);
+                return res.status(500).json({ err: err });
+            })
+        } else {
+            return res.status(401).json({ message: 'Not authorized to review flagged videos' }); 
+        }
+    })
+    .catch((err) => {
+        console.log(err);
+        return res.status(401).json({ err: err }); 
+    });
+}
 
 const changeLocation = (newLocation, videoDoc) => {
+    console.log(videoDoc)
     return new Promise((resolve, reject) => {
         if (`${ newLocation }-videos` === videoDoc.location) {
-            return resolve(); // do nothing 
+
+           return resolve(); 
         } else {
+            const promises = [];
             const location = videoDoc.location;
             console.log('firstLocation: ', location)
             videoDoc.location = `${ newLocation }-videos`;
             console.log('change location');
-            const promises = [];
             promises.push(db.doc(`/videos/${ videoDoc.title }`).update({ location: `${ newLocation }-videos` }));
             promises.push(db.doc(`/${ newLocation }-videos/${ videoDoc.title }`).set(videoDoc));
+            promises.push(db.doc(`/metadata/${ location }`).update({ length: FieldValue.increment(-1) }));
+            promises.push(db.doc(`/metadata/${ newLocation }-videos/`).update({ length: FieldValue.increment(1) }));
             Promise.all(promises).then(() => {
                 db.doc(`/${ location }/${ videoDoc.title }`).delete().then(() => {
                     return resolve();
@@ -238,4 +326,49 @@ const getRating = (rating) => {
     });
     const average = (rating.length - emptyFrames) / frames.length;
     return average;
+}
+
+const addToDate = () => {
+    const d = new Date(Date.now());
+    let day = d.toLocaleDateString().toString();
+    day = day.replace(/\//g, '.');
+    return new Promise((resolve, reject) => { // go in there and see if I can find it 
+        db.doc(`/ratingsPerDay/${ day }`).get()
+        .then(doc => {
+            if (!doc.exists) {
+                db.doc(`/ratingsPerDay/${ day }`).set({ date: Date.now(), day, ratings: 1 }).then(() => {
+                    resolve();
+                });
+            } else {
+                const data = doc.data();
+                doc.ref.update({ ratings: data.ratings + 1 }).then(() => {
+                    resolve();
+                });
+            }
+        })
+        .catch((err) => {
+            reject(err);
+        })
+    })
+}
+
+const recordVideoReview = (uid, video) => {
+    return new Promise((resolve, reject) => {
+        db.doc(`/users/${ uid }`).get()
+        .then((data)=> {
+            const doc = data.data();
+            if (!doc.videosRated.includes(video)) {
+                doc.videosRated.push(video);
+            }
+            doc.videosReviewed += 1;
+            doc.userScore += 1;
+            db.doc(`/users/${ uid }`).set(doc)
+            .then(() => {
+                resolve();
+            });
+        })
+        .catch(err => {
+            reject(err);
+        })
+    })
 }
