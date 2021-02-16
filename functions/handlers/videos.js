@@ -199,7 +199,7 @@ exports.checkAgreement = (checkVideo) => {
         console.log(location);
         if (!flagged && location !== 'incomplete') {
             rejected.forEach(user => {
-                const rejectedRating = { rating: checkVideo.ratings[user].rating, video: checkVideo.title };
+                const rejectedRating = { rating: checkVideo.ratings[user].rating, video: checkVideo.title, date: checkVideo.ratings[user].added };
                 promises.push(new Promise((resolve, reject) => {
                     db.doc(`/users/${ user }`).get().then(data => {
                         const doc = data.data();

@@ -73,6 +73,7 @@ exports.login = (req, res) => {
         email: req.body.email,
         password: req.body.password
     };
+    console.log(user);
 
     const { valid, errors } = validateLoginData(user);
 

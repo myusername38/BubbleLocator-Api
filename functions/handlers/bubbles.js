@@ -2,7 +2,7 @@ const { admin, db } = require('../util/admin');
 const FieldValue = admin.firestore.FieldValue;
 
 const { validateVideo, validateGetExpandedVideoData, validateTutorialVideo, validateDeleteRating, validateVideoTitle } = require('../util/validators')
-const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, checkCompletedTutorial, checkBannedUser } = require('../util/permissions');
+const { checkAssistantPermission, checkAdminPermission, checkOwnerPermission, checkCompletedTutorial } = require('../util/permissions');
 
 const videosAtOnce = 15;
 
@@ -10,12 +10,12 @@ exports.addVideo = (req, res) => {
     if (!req.headers.token) {
         return res.status(400).json({ message: 'Must have a token' }); 
     }
-
     const { valid, errors } = validateVideo(req.body);
 
     if (!valid) {
         return res.status(400).json(errors);
     }
+
     let url = req.body.url;
     if (url.substring(0, 26) !== 'https://www.dropbox.com/s/') {
         return res.status(403).json({ message: 'Videos must be from dropbox' })
@@ -28,6 +28,7 @@ exports.addVideo = (req, res) => {
         url = url.substring(0, url.length - 5) + '?raw=1'
     }
     id = id.replace(/%20/g, '_');
+
     admin.auth().verifyIdToken(req.headers.token) 
     .then((decodedToken) => {
         if (!checkAssistantPermission(decodedToken)) {
@@ -522,7 +523,9 @@ exports.getVideo = (req, res) => {
                 if (doc.exists) {
                     const docData = doc.data();
                     db.doc(`${ docData.location }/${ docData.title }`).get().then(doc => {
-                        return res.status(200).json({ video: doc.data() }); 
+                        const video = doc.data();
+                        video.location = docData.location;
+                        return res.status(200).json({ video }); 
                     });
                 } else {
                     return res.status(404).json({ err: 'Video does not exist' });

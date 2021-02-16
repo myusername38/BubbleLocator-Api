@@ -1,7 +1,4 @@
 const functions = require('firebase-functions');
-const { std } = require('mathjs')
-
-const { admin, db } = require('./util/admin');
 const cors = require('cors');
 
 const { signup, login, grantOwner, grantAdmin, grantAssistant, completedTutorial, getAssistants, getAdmins, getOwners, removePermissions, testToken, getUidFromEmail, deleteUser, banUser, addTutorialRating, getUserScoreGraphData, removeUserAccount, resetAllUserScores, updateUserCount } = require('./handlers/users');
